@@ -1,0 +1,113 @@
+# .github/workflows/deploy.yml
+name: Deploy FastAPI HTMX to AWS Lambda
+
+on:
+  push:
+    branches:
+      - main # Trigger on pushes to the main branch
+  workflow_dispatch: # Allow manual triggering
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest # Use a Linux environment for the build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11' # Choose your target Python version for Lambda
+
+      - name: Install dependencies for layer creation (in a temporary venv)
+        run: |
+          python -m venv venv_temp_layer
+          source venv_temp_layer/bin/activate
+          pip install wheel
+          deactivate
+        # wheel is needed for bdist_wheel, which is used by pip internally
+
+      - name: Install Lambda dependencies into a layer-compatible structure
+        run: |
+          mkdir -p build/python
+          # Important: use --platform and --target for Lambda compatibility
+          pip install -r requirements.txt \
+              --platform manylinux2014_x86_64 \
+              --target build/python \
+              --only-binary=:all: \
+              --upgrade
+
+      - name: Zip the Lambda Layer contents
+        run: |
+          cd build/python
+          zip -r ../../lambda_layer.zip .
+          cd ../.. # Go back to root
+
+      - name: Copy application code to build directory
+        run: |
+          cp -R app/ build/
+
+      - name: Zip the application code
+        run: |
+          cd build/app
+          zip -r ../../lambda_app.zip .
+          cd ../.. # Go back to root
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy Lambda Layer
+        id: deploy_layer
+        uses: aws-actions/aws-lambda-deploy@v1.4.0
+        with:
+          function-name: pydantic-htmx-layer # A name for your layer (not function)
+          zip-file: lambda_layer.zip
+          role: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/YourLambdaExecutionRole # Replace with your Lambda execution role ARN
+          runtime: python3.11 # Must match the Python version used in build step
+          publish-layer: true
+          # The publish-layer: true option automatically creates/updates a layer version
+          # We need to output the ARN for the next step
+
+      - name: Get Lambda Layer ARN
+        id: get_layer_arn
+        run: |
+          # The deploy action doesn't directly output the layer ARN.
+          # We need to fetch the latest version of the layer.
+          LAYER_ARN=$(aws lambda list-layer-versions \
+            --layer-name pydantic-htmx-layer \
+            --query 'LayerVersions[0].LayerVersionArn' \
+            --output text)
+          echo "LAYER_ARN=${LAYER_ARN}" >> $GITHUB_ENV
+
+      - name: Deploy Lambda Function
+        uses: aws-actions/aws-lambda-deploy@v1.4.0
+        with:
+          function-name: FastAPIHTMXApp # Name of your Lambda function
+          zip-file: lambda_app.zip
+          role: arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/YourLambdaExecutionRole # Replace with your Lambda execution role ARN
+          runtime: python3.11 # Must match the Python version you built for
+          handler: app.main.handler # This tells Lambda to call the 'handler' object in 'app/main.py'
+          environment: |
+            Variables:
+              # Example environment variable
+              MY_ENV_VAR: "Hello from Lambda Env"
+          layers: ${{ env.LAYER_ARN }} # Attach the deployed layer
+          memory: 256 # Adjust as needed
+          timeout: 30 # Adjust as needed (in seconds)
+          # Create a Function URL for public access
+          function-url-auth-type: NONE # For public access (BE CAREFUL IN PROD)
+
+      - name: Get Function URL
+        id: get_function_url
+        run: |
+          FUNCTION_URL=$(aws lambda get-function-url-config \
+            --function-name FastAPIHTMXApp \
+            --query 'FunctionUrl' \
+            --output text)
+          echo "Function URL: ${FUNCTION_URL}"
+          echo "function_url=${FUNCTION_URL}" >> $GITHUB_OUTPUT
