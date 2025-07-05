@@ -2,7 +2,8 @@
 name: Deploy FastAPI HTMX to AWS Lambda
 
 on:
-  push:
+  pull_request:
+  #push:
     branches:
       - main # Trigger on pushes to the main branch
   workflow_dispatch: # Allow manual triggering
