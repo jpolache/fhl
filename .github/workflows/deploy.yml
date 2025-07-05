@@ -87,9 +87,10 @@ jobs:
             --query 'LayerVersions[0].LayerVersionArn' \
             --output text)
           echo "LAYER_ARN=${LAYER_ARN}" >> $GITHUB_ENV
-
-      - name: Deploy Lambda Function
-        uses: aws-actions/aws-lambda-deploy@v1.4.0
+      - name: Deploy Lambda Python
+        uses: kohrongying/py-lambda-action@v1.0.3
+      #- name: Deploy Lambda Function
+       # uses: aws-actions/aws-lambda-deploy@v1.4.0
         with:
           function-name: FastAPIHTMXApp # Name of your Lambda function
           zip-file: lambda_app.zip
